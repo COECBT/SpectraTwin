@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /Users/naveenj/Documents/Projects_IITD/SpectrTwin-main *)"
+    ]
+  }
+}
