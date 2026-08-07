@@ -10,15 +10,8 @@ import json
 import datetime
 from pathlib import Path
 
-# NOTE: TensorFlow is intentionally NOT imported at module load time.
-# Importing it eagerly made every page load all of TensorFlow, whose Abseil
-# threadpool initialisation inside Streamlit's worker threads produced
-# "[mutex.cc : 452] RAW: Lock blocking ..." messages (and slow start-ups).
-# TensorFlow/Keras are only needed by the ANN models, so they are imported
-# lazily via _load_keras() at the point of use.
+
 def _load_keras():
-    """Import TensorFlow/Keras on demand and return the symbols the ANN models
-    need. Keeps TensorFlow out of the import path for every non-ANN workflow."""
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
     os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
     from tensorflow.keras.models import Sequential
@@ -128,11 +121,6 @@ class Models:
         self.predictions = None
 
     def get_param(self, prompt, default, cast_type):
-        # NOTE: this runs inside a Streamlit web app where there is no
-        # interactive stdin. The previous implementation called input(),
-        # which blocks forever waiting for terminal input and freezes the
-        # whole app (e.g. manual Lasso/ElasticNet). Return the default value
-        # instead so model training never hangs.
         return default
 
     def fit_predict_evaluate(self, model, X_train, X_test, y_train, y_test, is_classification=True):
@@ -283,13 +271,6 @@ class Models:
         else:
             return MultiOutputClassifier(model)
 
-    # ------------------------------------------------------------------
-    # Manual hyperparameter editing
-    # ------------------------------------------------------------------
-    # Registry of the models offered in the Manual flow. Each entry is
-    #   display_name: (estimator_class, fixed_kwargs, [param_specs])
-    # where each param spec is (name, kind, default, options) and kind is one
-    # of "bool", "int", "float" or "select".
     def _manual_hp_specs(self, is_classification=False):
         if is_classification:
             return {
@@ -690,19 +671,6 @@ class Models:
         model = self.wrap_classifier_if_needed(model, y_train)
         return self.fit_predict_evaluate(model, X_train, X_test, y_train, y_test, is_classification=True)
 
-
-    
-    '''def save_predictions_to_csv(self, y_test, predictions, filename="predictions.csv"):
-        
-        output_df = pd.DataFrame({
-            "Actual": y_test.values,
-            "Predicted": predictions
-        })
-        output_df.to_csv(filename, index=False)
-        print(f"Predictions saved to {filename}")
-
-
-'''
     def save_predictions_to_csv(self, y_test, predictions, filename="predictions.csv"):
         y_test = np.array(y_test)
         predictions = np.array(predictions)
@@ -726,21 +694,39 @@ class Models:
 
 
 class optuna_Model:
-    def __init__(self , n_trials = 100, timeout = None):
+    def __init__(self , n_trials = 100, timeout = None, cv = 5):
         self.model = None
         self.predictions = None
         self.study = None
         self.n_trials = n_trials
-        # Optional wall-clock limit (seconds) per study.optimize so heavy models
-        # (Ensemble, Random Forest on many targets) can't run indefinitely.
         self.timeout = timeout
-        # Quieten optuna's per-trial INFO logging so long runs don't flood the
-        # console and appear to hang.
+        self.cv = cv
         try:
             optuna.logging.set_verbosity(optuna.logging.WARNING)
         except Exception:
             pass
-    
+
+    def _cv_folds(self, n_samples):
+        return max(2, min(self.cv, int(n_samples)))
+
+    def _cv_mse(self, model, X, y):
+        try:
+            n = X.shape[0] if hasattr(X, "shape") else len(X)
+            scores = cross_val_score(model, X, y, cv=self._cv_folds(n),
+                                     scoring="neg_mean_squared_error", n_jobs=1)
+            return float(-np.mean(scores))
+        except Exception:
+            return float("inf")
+
+    def _cv_clf_loss(self, model, X, y):
+        try:
+            n = X.shape[0] if hasattr(X, "shape") else len(X)
+            scores = cross_val_score(model, X, y, cv=self._cv_folds(n),
+                                     scoring="f1_weighted", n_jobs=1)
+            return float(1.0 - np.mean(scores))
+        except Exception:
+            return float("inf")
+
     
     def fit_predict_evaluate(self, model, X_train, X_test, y_train, y_test, study=None, is_classification=True):
         model.fit(X_train, y_train)
@@ -794,11 +780,9 @@ class optuna_Model:
         else:
             return MultiOutputClassifier(model)
 
-    ############################################################## REGRESSION MODEL ########################################################################################
+#regression cases
 
     def Linear_regressor(self, X_train, X_test, y_train, y_test):
-        # Linear regression has no hyperparameters to tune, so there is no
-        # optuna study here; pass study=None explicitly.
         model = LinearRegression()
         model = self.wrap_regressor_if_needed(model, y_train)
         return self.fit_predict_evaluate(model, X_train, X_test, y_train, y_test, study=None, is_classification=False)
@@ -813,9 +797,7 @@ class optuna_Model:
 
             model = Ridge(alpha=alpha, solver=solver, max_iter=max_iter, tol=tol)
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         # Minimize MSE (was "maximize", which selected the worst parameters).
         study = optuna.create_study(direction="minimize")
@@ -836,9 +818,7 @@ class optuna_Model:
 
             model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=max_iter, tol=tol)
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -855,9 +835,7 @@ class optuna_Model:
             fit_intercept = trial.suggest_categorical("fit_intercept", [True, False])
             model = Lasso(alpha=alpha, fit_intercept=fit_intercept, max_iter=10000)
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -881,9 +859,7 @@ class optuna_Model:
                 max_features=max_features
             )
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -914,9 +890,7 @@ class optuna_Model:
                 n_jobs=-1
             )
             model = self.wrap_regressor_if_needed(model , y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -937,11 +911,7 @@ class optuna_Model:
             min_samples_leaf = trial.suggest_int("min_samples_leaf", 1, 15)  # Reduced max
             subsample = trial.suggest_float("subsample", 0.6, 1.0)  # Increased minimum
             max_features = trial.suggest_categorical("max_features", ["sqrt", "log2", None, 0.3, 0.5, 0.7])  # Added float options
-            
-            # ADDITIONAL REGULARIZATION PARAMETERS
             alpha = trial.suggest_float("alpha", 0.0, 0.5)  # L1 regularization
-            
-            # EARLY STOPPING PARAMETERS
             validation_fraction = trial.suggest_float("validation_fraction", 0.1, 0.3)
             n_iter_no_change = trial.suggest_int("n_iter_no_change", 5, 20)
             tol = trial.suggest_float("tol", 1e-6, 1e-3, log=True)
@@ -961,9 +931,7 @@ class optuna_Model:
                 random_state=42
             )
             model = self.wrap_regressor_if_needed(model , y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(
                     direction="minimize",
@@ -991,9 +959,7 @@ class optuna_Model:
                 loss=loss
             )
             model = self.wrap_regressor_if_needed(model , y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout ,  n_jobs = -1)
@@ -1034,9 +1000,7 @@ class optuna_Model:
             )
 
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction='minimize')
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout , n_jobs=-1 )
@@ -1058,9 +1022,7 @@ class optuna_Model:
             
             model = SVR(kernel=kernel, C=C, epsilon=epsilon, gamma=gamma)
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            preds = model.predict(X_test)
-            return mean_squared_error(y_test, preds)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1074,11 +1036,11 @@ class optuna_Model:
     def KNN_regressor(self, X_train, X_test, y_train, y_test):
 
         def objective(trial):
-            n_neighbors = trial.suggest_int("n_neighbors", 1, max(1, min(50, len(X_train) - 1)))
+            n_neighbors = trial.suggest_int("n_neighbors", 1, max(1, min(50, len(X_train) - (len(X_train)//self.cv) - 1)))
             weights = trial.suggest_categorical("weights", ["uniform", "distance"])
             algorithm = trial.suggest_categorical("algorithm", ["auto", "ball_tree", "kd_tree", "brute"])
             leaf_size = trial.suggest_int("leaf_size", 10, 100)
-            p = trial.suggest_int("p", 1, 2)  # 1 = manhattan, 2 = euclidean
+            p = trial.suggest_int("p", 1, 2)
 
             model = KNeighborsRegressor(
                 n_neighbors=n_neighbors,
@@ -1088,9 +1050,7 @@ class optuna_Model:
                 p=p
             )
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            preds = model.predict(X_test)
-            return mean_squared_error(y_test, preds)
+            return self._cv_mse(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1102,9 +1062,6 @@ class optuna_Model:
         return self.fit_predict_evaluate(model, X_train, X_test, y_train, y_test, study ,  is_classification=False)
 
     def GaussianProcess_regression(self, X_train, X_test, y_train, y_test):
-        # st.subheader(" Gaussian Process Regression with Optuna Optimization")
-
-        # n_trials = st.number_input("Number of Optuna Trials", min_value=10, max_value=200, value=30, step=5)
 
         def objective(trial):
             kernel_choice = trial.suggest_categorical("kernel", ["RBF", "Matern", "RationalQuadratic", "DotProduct", "WhiteKernel"])
@@ -1134,21 +1091,13 @@ class optuna_Model:
 
             model = self.wrap_regressor_if_needed(model, y_train)
 
-            try:
-                model.fit(X_train, y_train)
-                preds = model.predict(X_test)
-                mse = mean_squared_error(y_test, preds)
-                return mse
-            except Exception:
-                return float("inf")  
+            return self._cv_mse(model, X_train, y_train)
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
 
         self.study = study
         best_params = study.best_params
 
-
-        # Reconstruct best model from optimized params
         kernel = {
             "RBF": RBF(),
             "Matern": Matern(nu=1.5),
@@ -1186,9 +1135,7 @@ class optuna_Model:
             
             model = PLSRegression(n_components=n_components, scale=scale)
             model = self.wrap_regressor_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return mean_squared_error(y_test, pred)
+            return self._cv_mse(model, X_train, y_train)
         
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout  )
@@ -1278,9 +1225,6 @@ class optuna_Model:
             ensemble_model = self.wrap_regressor_if_needed(ensemble_model, y_train)
 
             try:
-                # Keep the outer CV sequential (n_jobs=1): the base models /
-                # stacking already parallelise, and nesting n_jobs=-1 at multiple
-                # levels oversubscribes the CPU and makes training appear stuck.
                 cv_scores = cross_val_score(
                     ensemble_model, X_train, y_train,
                     cv=3,
@@ -1292,15 +1236,11 @@ class optuna_Model:
                 return float('inf')
         
         study = optuna.create_study(direction="minimize")
-        
-        # with st.spinner("Optimizing Ensemble Regressor..."):
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout )
         
         best_params = study.best_params
         self.study = study
         
-        
-        # Rebuild best ensemble model
         base_models = []
         
         if best_params.get("use_svr", False):
@@ -1359,8 +1299,6 @@ class optuna_Model:
         return self.fit_predict_evaluate(final_ensemble, X_train, X_test, y_train, y_test, study , is_classification=False)
     
     def ANN_regression(self, X_train, X_test, y_train, y_test):
-
-        # Import TensorFlow/Keras only when an ANN model is actually trained.
         _k = _load_keras()
         Sequential = _k["Sequential"]
         Dense = _k["Dense"]
@@ -1374,21 +1312,15 @@ class optuna_Model:
         def create_ann_model(n_layers, n_neurons, activation, learning_rate, dropout_rate, optimizer_name):
             model = Sequential()
             
-            # Input layer
             model.add(Dense(n_neurons, activation=activation, input_shape=(X_train.shape[1],)))
             model.add(BatchNormalization())
             model.add(Dropout(dropout_rate))
             
-            # Hidden layers
             for _ in range(n_layers - 1):
                 model.add(Dense(n_neurons, activation=activation))
-                # model.add(BatchNormalization())
                 model.add(Dropout(dropout_rate))
-            
-            # Output layer for regression
             model.add(Dense(1 if len(y_train.shape) == 1 else y_train.shape[1], activation='linear'))
             
-            # Compile model
             if optimizer_name == 'adam':
                 optimizer = Adam(learning_rate=learning_rate)
             elif optimizer_name == 'rmsprop':
@@ -1400,7 +1332,6 @@ class optuna_Model:
             return model
         
         def objective(trial):
-            # Hyperparameter suggestions
             n_layers = trial.suggest_int("n_layers", 1, 2)
             n_neurons = trial.suggest_int("n_neurons", 16, 64)
             activation = trial.suggest_categorical("activation", ['relu', 'tanh', 'elu'])
@@ -1408,30 +1339,26 @@ class optuna_Model:
             dropout_rate = trial.suggest_float("dropout_rate", 0.0, 0.2)
             optimizer_name = trial.suggest_categorical("optimizer", ['adam', 'rmsprop', 'sgd'])
             batch_size = trial.suggest_int("batch_size", 16, 128)
-            
-            # Create model
+
             model = create_ann_model(n_layers, n_neurons, activation, learning_rate, dropout_rate, optimizer_name)
             
-            # Early stopping
             early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
             
-            # Fit model
-            model.fit(X_train, y_train, 
-                    validation_split=0.2, 
-                    epochs=100, 
+            history = model.fit(X_train, y_train,
+                    validation_split=0.2,
+                    epochs=100,
                     batch_size=batch_size,
                     callbacks=[early_stopping],
                     verbose=0)
-            
-            pred = model.predict(X_test, verbose=0)
-            return mean_squared_error(y_test, pred)
+
+            val_losses = history.history.get('val_loss', [])
+            return float(min(val_losses)) if val_losses else float('inf')
         
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout )
         best_params = study.best_params
         self.study = study
         
-        # Create best model
         model = create_ann_model(
             best_params['n_layers'],
             best_params['n_neurons'],
@@ -1451,46 +1378,35 @@ class optuna_Model:
         
         return self.fit_predict_evaluate(model, X_train, X_test, y_train, y_test, study ,  is_classification=False)
 
-
-    ## Classification models ###
+#classification cases
 
     def Logistic_regression(self, X_train, X_test, y_train, y_test):
         def objective(trial):
             max_iter = trial.suggest_int("max_iter", 100, 3000)
             C = trial.suggest_float("C", 1e-4, 10.0, log=True)
             penalty = trial.suggest_categorical("penalty", ["l1", "l2", "elasticnet"])
-            solver = trial.suggest_categorical("solver", ["saga", "liblinear", "lbfgs", "newton-cg", "sag"])
-            
-            if penalty == "l1" and solver not in ["saga", "liblinear"]:
-                return float("inf")
-            if penalty == "elasticnet" and solver != "saga":
-                return float("inf")
-            if penalty == "none" and solver not in ["newton-cg", "lbfgs", "sag"]:
-                return float("inf")
+            l1_ratio = trial.suggest_float("l1_ratio", 0.0, 1.0) if penalty == "elasticnet" else None
 
             model = LogisticRegression(
                 max_iter=max_iter,
                 C=C,
                 penalty=penalty,
-                solver=solver,
-                l1_ratio=trial.suggest_float("l1_ratio", 0.0, 1.0) if penalty == "elasticnet" else None,
+                solver="saga",
+                l1_ratio=l1_ratio,
                 random_state=42
             )
             model = self.wrap_classifier_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return 1 - accuracy_score(y_test, pred)
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
-        best_params = study.best_params
+        best_params = dict(study.best_params)
         self.study = study
 
-        # Filter out l1_ratio if not elasticnet
-        if best_params["penalty"] != "elasticnet":
+        if best_params.get("penalty") != "elasticnet":
             best_params.pop("l1_ratio", None)
 
-        model = LogisticRegression(**best_params, random_state=42)
+        model = LogisticRegression(**best_params, solver="saga", random_state=42)
         return self.fit_predict_evaluate(model, X_train, X_test, y_train, y_test, study ,  is_classification=True)
 
     def Decision_tree_classifier(self, X_train, X_test, y_train, y_test):
@@ -1507,9 +1423,7 @@ class optuna_Model:
                 max_features=max_features
             )
             model = self.wrap_classifier_if_needed(model , y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return 1 - accuracy_score(y_test, pred)
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1540,9 +1454,7 @@ class optuna_Model:
                 random_state=42
             )
             model = self.wrap_classifier_if_needed(model , y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return 1 - accuracy_score(y_test, pred)
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1573,9 +1485,7 @@ class optuna_Model:
                 max_features=max_features
             )
             model = self.wrap_classifier_if_needed(model , y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return 1 - accuracy_score(y_test, pred)
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1597,9 +1507,7 @@ class optuna_Model:
                 random_state=42
             )
             model = self.wrap_classifier_if_needed(model , y_train)
-            model.fit(X_train, y_train)
-            pred = model.predict(X_test)
-            return 1 - accuracy_score(y_test, pred)
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout, n_jobs=1)
@@ -1628,9 +1536,7 @@ class optuna_Model:
 
             model = XGBClassifier(**params)
             model = self.wrap_classifier_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            preds = model.predict(X_test)
-            return 1.0 - f1_score(y_test, preds, average="weighted")
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1653,9 +1559,7 @@ class optuna_Model:
             
             model = SVC(kernel=kernel, C=C, gamma=gamma, probability=True)
             model = self.wrap_classifier_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            preds = model.predict(X_test)
-            return 1.0 - f1_score(y_test, preds, average="weighted")
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1668,11 +1572,11 @@ class optuna_Model:
     
     def KNN_classifier(self, X_train, X_test, y_train, y_test):
         def objective(trial):
-            n_neighbors = trial.suggest_int("n_neighbors", 1, max(1, min(50, len(X_train) - 1)))
+            n_neighbors = trial.suggest_int("n_neighbors", 1, max(1, min(50, len(X_train) - (len(X_train)//self.cv) - 1)))
             weights = trial.suggest_categorical("weights", ["uniform", "distance"])
             algorithm = trial.suggest_categorical("algorithm", ["auto", "ball_tree", "kd_tree", "brute"])
             leaf_size = trial.suggest_int("leaf_size", 10, 100)
-            p = trial.suggest_int("p", 1, 2)  # 1 = manhattan, 2 = euclidean
+            p = trial.suggest_int("p", 1, 2)
 
             model = KNeighborsClassifier(
                 n_neighbors=n_neighbors,
@@ -1682,9 +1586,7 @@ class optuna_Model:
                 p=p
             )
             model = self.wrap_classifier_if_needed(model, y_train)
-            model.fit(X_train, y_train)
-            preds = model.predict(X_test)
-            return 1.0 - f1_score(y_test, preds, average="weighted")
+            return self._cv_clf_loss(model, X_train, y_train)
 
         study = optuna.create_study(direction="minimize")
         study.optimize(objective, n_trials=self.n_trials, timeout=self.timeout)
@@ -1715,12 +1617,6 @@ class optuna_Model:
 class AutoModelSelector:
     def __init__(self, task="regression", scoring_fn=None, verbose=True, n_trials=20, per_model_timeout=120):
         self.task = task
-        # Automated selection tunes ~13 models in sequence; the default 100
-        # trials/model made this take many minutes and look hung (especially
-        # Lasso/ElasticNet on high-dimensional spectra). Use a smaller budget.
-        # A per-model wall-clock timeout also caps heavy models (Ensemble,
-        # Random Forest on many targets) so a single model can never hang the
-        # whole selection.
         try:
             optuna.logging.set_verbosity(optuna.logging.WARNING)
         except Exception:
@@ -1923,7 +1819,6 @@ class OutlierRemover:
         self.threshold = threshold
         self.upper = None
         self.lower = None
-        # Populated by ``transform`` so callers can align other arrays (e.g. y).
         self.kept_mask_ = None
         self.kept_indices_ = None
         self.outlier_indices_ = None
@@ -1955,5 +1850,3 @@ class OutlierRemover:
     def fit_transform(self, X):
         self.fit(X)
         return self.transform(X)
-
-

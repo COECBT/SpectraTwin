@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cd /Users/naveenj/Documents/Projects_IITD/SpectrTwin-main *)"
+      "Bash(cd /Users/naveenj/Documents/Projects_IITD/SpectrTwin-main *)",
+      "Bash(awk 'NR>=549 && NR<=1720' midel.py)",
+      "Bash(awk 'NR>=1250 && NR<=1500' midel.py)"
     ]
   }
 }
