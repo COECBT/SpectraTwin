@@ -66,7 +66,7 @@ Plan which experiments to run next using active learning (Gaussian-process based
 
 1. **New Project** → enter your output/**component names** (comma-separated, e.g.
    `Component_A, Component_B`) → **Create Project**.
-2. **Edit anytime:** in the project menu open **"✏️ Edit Project — component names"** to
+2. **Edit anytime:** in the project menu open **"Edit Project — component names"** to
    rename components (data is kept) or change how many there are (this resets collected
    data, with a confirmation).
 3. **Data Management** tab → upload your existing results (CSV/Excel/TXT) or enter them
