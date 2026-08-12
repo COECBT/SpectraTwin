@@ -7,8 +7,6 @@ import random
 import sys, os
 from sklearn.model_selection import train_test_split
 
-# RandomConvFeatures lives in prediction_utils (an importable module) so that
-# models trained here can be unpickled on the Prediction / Real-Time pages.
 _PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
@@ -63,6 +61,67 @@ class StreamlitLivePlot(Callback):
             
         df_plot = pd.DataFrame(plot_data)
         self.placeholder.line_chart(df_plot)
+
+# -------------------------------------------------------------
+# EAGER TRAINING (macOS / Apple-Silicon workaround)
+# -------------------------------------------------------------
+# On this TensorFlow build, Keras `model.fit()` / `train_on_batch()` DEADLOCK:
+# the tf.function-compiled training step hangs at the first optimizer-variable
+# init (process sits at 0% CPU forever). Pure EAGER execution — forward pass,
+# GradientTape, optimizer.apply_gradients — runs fine, so we drive the training
+# loop ourselves. This is mathematically equivalent to fit() and still feeds the
+# live loss chart.
+def _mk_loss(loss_name):
+    if loss_name == "mae":
+        return lambda pred, target: tf.reduce_mean(tf.abs(pred - target))
+    return lambda pred, target: tf.reduce_mean(tf.square(pred - target))
+
+
+def _eager_fit(model, optimizer_name, learning_rate, loss_name,
+               X_train, y_train, X_val, y_val, epochs, batch_size, placeholder):
+    """Train `model` with an eager GradientTape loop. Returns (train_hist, val_hist)."""
+    opt = tf.keras.optimizers.get(optimizer_name)
+    opt.learning_rate = learning_rate
+    loss_f = _mk_loss(loss_name)
+
+    Xt = tf.convert_to_tensor(X_train, dtype=tf.float32)
+    yt = tf.convert_to_tensor(np.asarray(y_train).reshape(len(y_train), -1), dtype=tf.float32)
+    has_val = X_val is not None
+    if has_val:
+        Xv = tf.convert_to_tensor(X_val, dtype=tf.float32)
+        yv = tf.convert_to_tensor(np.asarray(y_val).reshape(len(y_val), -1), dtype=tf.float32)
+
+    n = int(Xt.shape[0])
+    bs = max(1, int(batch_size))
+    train_hist, val_hist = [], []
+    for _ in range(int(epochs)):
+        order = np.random.permutation(n)
+        for i in range(0, n, bs):
+            b = order[i:i + bs]
+            xb, yb = tf.gather(Xt, b), tf.gather(yt, b)
+            with tf.GradientTape() as tape:
+                loss = loss_f(model(xb, training=True), yb)
+            grads = tape.gradient(loss, model.trainable_variables)
+            opt.apply_gradients(zip(grads, model.trainable_variables))
+        # End-of-epoch metrics on the full sets (eager, no tf.function).
+        train_hist.append(float(loss_f(model(Xt, training=False), yt)))
+        plot = {"Training Loss": train_hist}
+        if has_val:
+            val_hist.append(float(loss_f(model(Xv, training=False), yv)))
+            plot["Validation Loss"] = val_hist
+        placeholder.line_chart(pd.DataFrame(plot))
+    return train_hist, val_hist
+
+
+def _eager_eval(model, loss_name, X_eval, y_eval):
+    """Eager loss + MAE on an evaluation set. Returns (loss, mae)."""
+    Xe = tf.convert_to_tensor(X_eval, dtype=tf.float32)
+    ye = tf.convert_to_tensor(np.asarray(y_eval).reshape(len(y_eval), -1), dtype=tf.float32)
+    pred = model(Xe, training=False)
+    loss = float(_mk_loss(loss_name)(pred, ye))
+    mae = float(tf.reduce_mean(tf.abs(pred - ye)))
+    return loss, mae
+
 
 # -------------------------------------------------------------
 # DATA INGESTION
@@ -241,7 +300,17 @@ with tab1:
         learning_rate = st.number_input("Learning Rate", value=0.001, format="%.4f")
         loss_fn = st.selectbox("Loss Function", ["mse", "mae"])
         optimizer = st.selectbox("Optimizer", ["adam", "rmsprop", "sgd"])
-        
+
+        m_test_size = st.slider(
+            "Test set fraction (held out)", min_value=0.1, max_value=0.4, value=0.2, step=0.05,
+            help="Scored only once, after training. Never used to fit or monitor the model.",
+        )
+        m_val_size = st.slider(
+            "Validation fraction (of remaining train)", min_value=0.0, max_value=0.4, value=0.2, step=0.05,
+            help="Split from the training data to monitor the live loss curve. "
+                 "Set to 0 to train on all non-test data with no validation curve.",
+        )
+
         train_clicked = st.button("Compile & Train Network", use_container_width=True, type="primary")
 
     with t_col2:
@@ -257,11 +326,24 @@ with tab1:
                 try:
                     tf.keras.backend.clear_session()
                     has_conv = any(l['type'] in ['Conv1D', 'MaxPooling1D'] for l in st.session_state.nn_layers)
-                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-                    
+
+                    # Three-way split: TEST is held out and scored only once at the
+                    # end. VALIDATION (carved from the remaining train data) is used
+                    # only to monitor the live loss curve — it never updates weights.
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=float(m_test_size), random_state=42
+                    )
+                    X_val = y_val = None
+                    if float(m_val_size) > 0 and X_train.shape[0] > 4:
+                        X_train, X_val, y_train, y_val = train_test_split(
+                            X_train, y_train, test_size=float(m_val_size), random_state=42
+                        )
+
                     if has_conv:
                         X_train = np.expand_dims(X_train, axis=2)
                         X_test = np.expand_dims(X_test, axis=2)
+                        if X_val is not None:
+                            X_val = np.expand_dims(X_val, axis=2)
                         input_shape = (X_train.shape[1], 1)
                     else:
                         input_shape = (X_train.shape[1],)
@@ -285,22 +367,26 @@ with tab1:
                     n_outputs = 1 if y_train.ndim == 1 else y_train.shape[1]
                     model.add(Dense(n_outputs, activation='linear'))
 
-                    opt = tf.keras.optimizers.get(optimizer)
-                    opt.learning_rate = learning_rate
-                    model.compile(optimizer=opt, loss=loss_fn, metrics=['mae'])
-                    
-                    st_callback = StreamlitLivePlot(loss_placeholder)
-                    model.fit(
-                        X_train, y_train,
-                        validation_data=(X_test, y_test),
-                        epochs=epochs,
-                        batch_size=batch_size,
-                        callbacks=[st_callback],
-                        verbose=0
+                    # Train with an eager GradientTape loop (see _eager_fit).
+                    # Keras fit()/train_on_batch() deadlock on this TF build, so we
+                    # cannot use them. Validation (if any) is used only to draw the
+                    # live loss curve; the test set is never seen during training.
+                    _eager_fit(
+                        model, optimizer, learning_rate, loss_fn,
+                        X_train, y_train, X_val, y_val,
+                        epochs, batch_size, loss_placeholder,
                     )
-                    
-                    test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
-                    st.success(f"Training Complete! Final Test Loss ({loss_fn.upper()}): {test_loss:.4f}")
+
+                    # Final, single evaluation on the untouched held-out test set.
+                    test_loss, test_mae = _eager_eval(model, loss_fn, X_test, y_test)
+                    st.success(f"Training Complete! Held-out Test Loss ({loss_fn.upper()}): {test_loss:.4f}")
+                    mt1, mt2, mt3 = st.columns(3)
+                    mt1.metric(f"Test {loss_fn.upper()}", f"{test_loss:.4f}")
+                    mt2.metric("Test MAE", f"{test_mae:.4f}")
+                    mt3.metric(
+                        "Split (train / val / test)",
+                        f"{X_train.shape[0]} / {0 if X_val is None else X_val.shape[0]} / {X_test.shape[0]}",
+                    )
                     
                     # Extract parameters for PKL compatibility
                     model_json = model.to_json()
@@ -322,11 +408,14 @@ with tab1:
                     st.warning("Hint: Did you forget to add a 'Flatten' layer after Conv1D before placing Dense layers?")
 
 with tab2:
-    st.header("AutoML Tuner (Random Search)")
+    st.header("AutoML Tuner (Random Search + Cross-Validation)")
     st.markdown(
-        "Automatically search for the best neural network. Fast and robust (no "
-        "TensorFlow/GPU, no graph build-up), and the result is a standard scikit-learn "
-        "model that works directly on the Prediction page."
+        "Automatically search for the best neural network. Hyperparameters are "
+        "selected by **k-fold cross-validation on the training set only**; the "
+        "**test set is held out and scored exactly once** at the end — so the "
+        "reported test metrics are an honest, leakage-free estimate of "
+        "generalization. Fast and robust (no TensorFlow/GPU), and the result is a "
+        "standard scikit-learn model that works directly on the Prediction page."
     )
 
     a_col1, a_col2 = st.columns([1, 2])
@@ -339,6 +428,14 @@ with tab2:
                  "before the MLP — CNN-like, but with no TensorFlow.",
         )
         num_trials = st.number_input("Number of Trials", min_value=2, max_value=100, value=15, step=1)
+        cv_folds = st.number_input(
+            "Cross-validation folds", min_value=2, max_value=10, value=5, step=1,
+            help="Hyperparameters are selected by k-fold CV on the TRAINING set "
+                 "only. The test set is held out and scored just once at the end.",
+        )
+        test_size = st.slider(
+            "Test set fraction (held out)", min_value=0.1, max_value=0.4, value=0.2, step=0.05,
+        )
         max_iter = st.number_input("Max iterations per trial", min_value=50, max_value=2000, value=300, step=50)
         n_kernels = 200
         if arch_choice.startswith("1D-CNN"):
@@ -358,23 +455,34 @@ with tab2:
                 from sklearn.neural_network import MLPRegressor
                 from sklearn.preprocessing import StandardScaler
                 from sklearn.pipeline import Pipeline
-                from sklearn.metrics import r2_score
+                from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+                from sklearn.model_selection import cross_val_score, KFold
 
                 use_conv = arch_choice.startswith("1D-CNN")
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-                # For the 1D-CNN option, extract random-conv features ONCE (they
-                # don't depend on the MLP hyperparameters) and search over the MLP
-                # on those features — keeps the search fast.
+                # ---- Hold out the test set. It is NOT touched during tuning; it
+                # is scored exactly once, at the very end, for an honest estimate.
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=float(test_size), random_state=42
+                )
+
+                # Guard: need enough training samples for the requested folds.
+                k = int(cv_folds)
+                if X_train.shape[0] < k * 2:
+                    k = max(2, X_train.shape[0] // 2)
+                    auto_status.warning(f"Too few training samples for {int(cv_folds)} folds; using {k}.")
+
+                # For the 1D-CNN option, extract random-conv features ONCE from the
+                # TRAINING data (kernels are random/unsupervised, so this is leakage
+                # free) and search over the MLP on those features — keeps CV fast.
                 if use_conv:
-                    auto_status.info("Extracting 1D convolution features...")
+                    auto_status.info("Extracting 1D convolution features (train only)...")
                     conv_extractor = RandomConvFeatures(n_kernels=int(n_kernels), random_state=42)
                     X_train_feat = conv_extractor.fit_transform(X_train)
-                    X_test_feat = conv_extractor.transform(X_test)
                 else:
-                    X_train_feat, X_test_feat = X_train, X_test
+                    X_train_feat = X_train
 
-                best_score = -np.inf
+                best_score = -np.inf          # best mean CV R² on TRAIN
                 best_mlp_kwargs = None
                 best_config = {}
 
@@ -383,9 +491,10 @@ with tab2:
                 lr_choices = [1e-2, 5e-3, 1e-3, 5e-4]
                 act_choices = ["relu", "tanh"]
 
+                cv = KFold(n_splits=k, shuffle=True, random_state=42)
                 n_trials = int(num_trials)
                 for trial in range(n_trials):
-                    auto_status.info(f"Running Trial {trial+1} / {n_trials}...")
+                    auto_status.info(f"Running Trial {trial+1} / {n_trials} ({k}-fold CV on train)...")
                     auto_progress.progress(trial / n_trials)
 
                     mlp_kwargs = dict(
@@ -401,8 +510,11 @@ with tab2:
                     model = Pipeline([("scaler", StandardScaler()),
                                       ("mlp", MLPRegressor(**mlp_kwargs))])
                     try:
-                        model.fit(X_train_feat, y_train)
-                        score = r2_score(y_test, model.predict(X_test_feat))
+                        # Model selection uses ONLY the training set, via CV.
+                        cv_scores = cross_val_score(
+                            model, X_train_feat, y_train, cv=cv, scoring="r2"
+                        )
+                        score = float(np.mean(cv_scores))
                     except Exception:
                         continue  # skip a trial that fails to converge
 
@@ -414,7 +526,9 @@ with tab2:
                                        "alpha": mlp_kwargs["alpha"],
                                        "learning_rate": mlp_kwargs["learning_rate_init"],
                                        "activation": mlp_kwargs["activation"]}
-                        best_metric_display.success(f"🔥 New best Test R²: **{best_score:.4f}**  ({best_config})")
+                        best_metric_display.success(
+                            f"🔥 New best CV R² (train): **{best_score:.4f}**  ({best_config})"
+                        )
 
                 auto_progress.progress(1.0)
                 if best_mlp_kwargs is not None:
@@ -426,12 +540,30 @@ with tab2:
                     steps.append(("scaler", StandardScaler()))
                     steps.append(("mlp", MLPRegressor(**best_mlp_kwargs)))
                     final_model = Pipeline(steps)
+                    # Fit the winning configuration on the FULL training set...
                     final_model.fit(X_train, y_train)
+
+                    # ...and evaluate ONCE on the untouched held-out test set.
+                    y_pred = final_model.predict(X_test)
+                    test_r2 = r2_score(y_test, y_pred)
+                    test_rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+                    test_mae = float(mean_absolute_error(y_test, y_pred))
 
                     buffer = io.BytesIO()
                     pickle.dump(final_model, buffer)
                     st.session_state.trained_model_bytes = buffer.getvalue()
-                    auto_status.success(f"AutoML Tuning Complete! Best Test R² = {best_score:.4f} | {best_config}")
+
+                    auto_status.success("AutoML Tuning Complete!")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Best CV R² (train)", f"{best_score:.4f}")
+                    m2.metric("Held-out Test R²", f"{test_r2:.4f}")
+                    m3.metric("Test RMSE", f"{test_rmse:.4f}")
+                    m4.metric("Test MAE", f"{test_mae:.4f}")
+                    st.caption(
+                        f"Best config: {best_config} — selected by {k}-fold CV on "
+                        f"{X_train.shape[0]} training samples, then evaluated once on "
+                        f"{X_test.shape[0]} held-out test samples."
+                    )
                 else:
                     auto_status.error("No valid model found. Check that your target is numeric "
                                       "and that you have enough samples.")
@@ -446,7 +578,7 @@ with tab2:
 # -------------------------------------------------------------
 st.markdown("---")
 if st.session_state.trained_model_bytes is not None:
-    st.markdown("### 💾 Export Your Trained Network")
+    st.markdown("### Export Your Trained Network")
     st.download_button(
         label="Download Best Trained Model (.pkl)",
         data=st.session_state.trained_model_bytes,

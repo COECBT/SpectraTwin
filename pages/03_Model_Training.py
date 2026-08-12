@@ -96,7 +96,13 @@ def app():
     initialize_session_state()
     
     st.title("Model Training & Evaluation Features")
-    
+
+    # Global "back" navigation — available on every step after the first.
+    if st.session_state.get("step", 1) > 1:
+        if st.button("← Back", key="nav_back_model_training"):
+            st.session_state.step -= 1
+            st.rerun()
+
     if st.session_state.step == 1:
         st.header("Step 1: Load Raw Data")
         

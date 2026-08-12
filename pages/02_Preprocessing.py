@@ -127,6 +127,12 @@ def main():
     else:
         st.success(f"Welcome, {st.session_state.user_name}")
 
+    # Global "back" navigation — available on every step after the first.
+    if st.session_state.current_step > 1:
+        if st.button("← Back", key="nav_back_preprocessing"):
+            st.session_state.current_step -= 1
+            st.rerun()
+
     if st.session_state.current_step == 1:
         st.header("Step 1: Data Upload")
 

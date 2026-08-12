@@ -345,6 +345,12 @@ def main():
 
 
 
+    # Global "back" navigation — available on every step after the first.
+    if st.session_state.get("step", 1) > 1:
+        if st.button("← Back", key="nav_back_full_pipeline"):
+            st.session_state.step -= 1
+            st.rerun()
+
     # Step 1: Load Raw Data
     if st.session_state.step == 1:
         st.header("Step 1: Load Raw Data")

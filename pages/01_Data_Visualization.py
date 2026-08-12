@@ -632,7 +632,7 @@ def app():
                 st.write(f"**Detected {len(peaks)} peaks**")
                 peaks_df = pd.DataFrame({
                     'Peak Index': peaks,
-                    x_label: x_axis_filtered[peaks].values,
+                    x_label: np.asarray(x_axis_filtered)[peaks],
                     'Intensity': spectrum[peaks],
                     'Prominence': properties['prominences']
                 })

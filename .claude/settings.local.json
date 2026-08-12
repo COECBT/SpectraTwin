@@ -3,7 +3,13 @@
     "allow": [
       "Bash(cd /Users/naveenj/Documents/Projects_IITD/SpectrTwin-main *)",
       "Bash(awk 'NR>=549 && NR<=1720' midel.py)",
-      "Bash(awk 'NR>=1250 && NR<=1500' midel.py)"
+      "Bash(awk 'NR>=1250 && NR<=1500' midel.py)",
+      "Read(//Users/naveenj/.pyenv/versions/**)",
+      "Bash(:)",
+      "Read(//Users/naveenj/**)",
+      "Read(//Users/naveenj/miniconda3/**)",
+      "Read(//Users/naveenj/anaconda3/**)",
+      "Read(//opt/homebrew/Caskroom/**)"
     ]
   }
 }
