@@ -1,374 +1,223 @@
 # SpectraTwin
 
-A comprehensive spectral analysis and machine learning pipeline application built with Streamlit. SpectraTwin provides tools for experimental design, data visualization, preprocessing, model training, neural network building, and real-time analysis of spectral data.
+SpectraTwin is a Streamlit application for **spectral data analysis and machine learning** —
+experimental design, visualization, preprocessing, model training (classical ML + neural
+networks), prediction, control charts, and real-time monitoring — all from one interface.
 
-## Features
+---
 
-- **Experimental Design**: Plan and design spectral experiments with statistical rigor
-- **Data Visualization**: Interactive visualization of spectral data and analysis results
-- **Data Preprocessing**: Advanced preprocessing techniques for spectral data
-- **Model Training**: Train machine learning models (PCA, MPLS, OPLS) on spectral data
-- **Neural Network Builder**: Design and train custom neural networks
-- **Control Charts**: Statistical process control and quality monitoring
-- **Full Pipeline**: End-to-end automated analysis workflow
-- **Model Prediction**: Make predictions using trained models
-- **One-Click Pipeline**: Streamlined single-step analysis
-- **Real-Time Transfer**: Live spectral data transfer and analysis
-- **HPLC Integration**: High-Performance Liquid Chromatography data analysis
+## Table of Contents
+1. [Quick Start](#quick-start)
+2. [How to Use](#how-to-use)
+   - [Experimental Design](#1-experimental-design)
+   - [Data Visualization](#2-data-visualization)
+   - [Preprocessing](#3-preprocessing)
+   - [Model Training](#4-model-training)
+   - [Neural Network Builder](#5-neural-network-builder)
+   - [Model Prediction](#6-model-prediction)
+   - [Full Pipeline & One-Click Pipeline](#7-full-pipeline--one-click-pipeline)
+   - [Control Charts](#8-control-charts)
+   - [Real-Time Transfer](#9-real-time-transfer)
+   - [HPLC](#10-hplc)
+3. [Data Format](#data-format)
+4. [Troubleshooting](#troubleshooting)
+5. [Project Structure](#project-structure)
+6. [License](#license)
+
+---
+
+## Quick Start
+
+**Requirements:** Python **3.10** recommended.
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. (macOS only, for XGBoost) install the OpenMP runtime
+#    conda install -c conda-forge llvm-openmp   # if using conda
+#    brew install libomp                        # if using Homebrew
+
+# 3. Run the app
+streamlit run Home.py
+```
+
+The app opens at `http://localhost:8501`. Use the **left sidebar** to move between pages.
+
+**Optional — AI chatbot:** to enable the in-app assistant, get a free key from
+[Groq Console](https://console.groq.com) and set it as an environment variable
+(`GROQ_API_KEY`) or paste it into the chatbot box when prompted. The app works fully
+without it.
+
+---
+
+## How to Use
+
+A typical workflow is: **Preprocess → Train a model → Predict**. Each page also works
+on its own. Most pages start by asking you to **upload a data file** and **select the
+target column(s)** to model.
+
+> **Tip — everything is editable / re-runnable.** You can go back a step, change a
+> selection, and re-run at any time. In Experimental Design you can rename or change
+> components after creating a project (see below).
+
+### 1. Experimental Design
+Plan which experiments to run next using active learning (Gaussian-process based).
+
+1. **New Project** → enter your output/**component names** (comma-separated, e.g.
+   `Component_A, Component_B`) → **Create Project**.
+2. **Edit anytime:** in the project menu open **"✏️ Edit Project — component names"** to
+   rename components (data is kept) or change how many there are (this resets collected
+   data, with a confirmation).
+3. **Data Management** tab → upload your existing results (CSV/Excel/TXT) or enter them
+   manually.
+4. **Design & Analysis** tab → define target ranges and **generate a Y-space plan**, or
+   let the model **suggest the next most informative experiment**.
+5. Use **← Back to Home** to return, or **Save Project** to download it as a `.pkl`.
+
+### 2. Data Visualization
+Explore spectra interactively.
+
+1. Upload a spectral file and pick the **target column(s)**.
+2. Browse tabs: **spectra overlay**, **statistics**, **correlation heatmap**,
+   **PCA**, and **peak detection** (adjust prominence/distance to find peaks).
+
+### 3. Preprocessing
+Clean and transform spectra, then export ready-to-model data.
+
+1. **Upload** data and **select target column(s)** (non-numeric feature columns are
+   dropped automatically).
+2. Optional steps, in order: **Outlier removal → Wavelet denoising → Standard
+   preprocessing → Advanced (FFT / OPLS) → Export**.
+3. **Standard preprocessing** offers a **technique** (General / Raman / NIR / FTIR) and
+   two modes:
+   - **Manual** — pick exactly which steps to apply (baseline, smoothing,
+     normalization, derivatives, …).
+   - **Automated** — Optuna searches the best preprocessing pipeline for you (a live
+     progress bar shows trial-by-trial status).
+4. **Export** downloads the preprocessed **X**, the **targets (y)**, and a
+   **parameters JSON** describing every step (used later for prediction).
+
+### 4. Model Training
+Train and compare classical ML models.
+
+1. **Data source:** upload a file **or** choose **"Use Session State (Preprocessed)"**
+   to reuse the data you just made on the Preprocessing page — no re-upload needed.
+2. Select **target column(s)** (one or more), then do a **Train/Test split**.
+3. Choose a **run type**:
+   - **Manual** — you set the hyperparameters.
+   - **Defined Hypertuning** — pick one model; Optuna tunes its hyperparameters
+     (via cross-validation on the training data).
+   - **Automated** — searches across all models and picks the best.
+   You can set the **number of tuning iterations**.
+4. **Save** the trained model — you get `model.pkl`, `parameters.json`, and
+   (for pipelines) a `fitted_objects.pkl`. Keep all of these for prediction.
+
+### 5. Neural Network Builder
+Build neural networks — no coding.
+
+1. Upload **CSV or Excel** (or use session-state preprocessed data) and select
+   **one or more target columns**.
+2. **Visual Block Builder (Manual)** — stack Dense/Conv1D/Pooling/Dropout/Flatten
+   layers and train (uses TensorFlow/Keras).
+3. **AutoML Tuner** — fast, TensorFlow-free random search over a scikit-learn network:
+   - **MLP (Dense)**, or
+   - **1D-CNN (Conv features + MLP)** — captures local spectral patterns.
+   Set the number of trials; the best model is exportable as a `.pkl` that works
+   directly on the Prediction page.
+
+### 6. Model Prediction
+Apply a saved model to new data.
+
+1. Upload the **Model (.pkl)**, the **Parameters (.json)**, and — for best results —
+   the **Fitted objects (.pkl)**.
+2. Choose the **model source** (Auto-detect / One-Click / General) — auto-detect usually
+   works.
+3. Upload the **new data**, then **Run Prediction**. Download the results as CSV.
+
+> Uploading the **fitted objects** reproduces the training preprocessing exactly. Without
+> it, preprocessing is reconstructed approximately and you'll see a warning.
+
+### 7. Full Pipeline & One-Click Pipeline
+- **Full Pipeline** — the whole workflow (upload → preprocess → dimensionality reduction
+  → augmentation → train → evaluate → save) in one guided page.
+- **One-Click Pipeline** — the fastest route: upload, pick targets, choose a technique
+  (General/Raman/NIR/FTIR), optionally **skip preprocessing** if your data is already
+  processed, and it runs preprocessing + automated model selection end-to-end.
+
+### 8. Control Charts
+Batch-process monitoring with **Multiway PLS (MPLS)** and statistical process control
+(DModX, Hotelling's T², score charts). Upload data, set the batch structure, fit the
+MPLS model, and review the SPC charts.
+
+### 9. Real-Time Transfer
+Monitor a folder for incoming spectra and broadcast live predictions over your local
+network (LAN). **This feature is for local / self-hosted use only.**
+
+**On the analysis machine (server):**
+1. Open the **Real-Time Transfer** page, set the folder to watch and a port.
+2. Upload your **Model (.pkl)**, **Parameters (.json)**, and optional **Fitted objects
+   (.pkl)**, and pick the model source.
+3. Click **Start Server** and copy the shown WebSocket URL (`ws://…:8765`).
+
+**On the instrument machine (client):**
+```bash
+python realtime_client.py
+```
+Paste the WebSocket URL, click **Connect**, then drop spectra files (`.csv`, `.txt`,
+`.xlsx`) into the watched folder — predictions appear live. Use **Stop Server** to shut
+it down cleanly (the port is released so you can restart).
+
+### 10. HPLC
+Tools for High-Performance Liquid Chromatography data analysis.
+
+---
+
+## Data Format
+
+- **Rows = samples, columns = features (wavelengths) + target(s).**
+- Feature/wavelength column headers should be **numeric** (e.g. `800.0, 805.0, …`).
+  Non-numeric feature columns (sample IDs, labels) are detected and dropped.
+- Supported files: **CSV, Excel (.xlsx/.xls), TXT (tab-delimited)**.
+- Select which column(s) are the **target(s)** on each page (multiple targets are
+  supported and train a single multi-output model).
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| XGBoost `libomp.dylib` error (macOS) | `conda install -c conda-forge llvm-openmp` (or `brew install libomp`) |
+| Dependency conflicts | Use **Python 3.10**; reinstall with `pip install -r requirements.txt` |
+| Chatbot not responding | Set `GROQ_API_KEY` (or paste a key in the chatbot box); the app still works without it |
+| Prediction feature-count mismatch | Upload the **fitted objects (.pkl)** saved with the model |
+| Port 8501 already in use | `streamlit run Home.py --server.port 8502` |
+| Real-time "port in use" after stop | Use **Stop Server** (it frees the port); pick another port if needed |
+
+---
 
 ## Project Structure
 
 ```
-spectraTwin/
-├── Home.py                          # Main Streamlit app
-├── pages/                           # Streamlit multi-page app pages
-│   ├── 00_Experimental design.py
-│   ├── 01_Data_Visualization.py
-│   ├── 02_Preprocessing.py
-│   ├── 03_Model_Training.py
-│   ├── 04_Neural_Network_Builder.py
-│   ├── 05_Control chart.py
-│   ├── 06_Full_Pipeline.py
-│   ├── 07_Model_prediction.py
-│   ├── 08_One_Click_Pipeline.py
-│   ├── 09_Real_Time_Transfer.py
-│   └── 10_HPLC.py
-├── Logo/                            # Application logos and assets
-├── Core Modules:
-│   ├── pca.py                       # Principal Component Analysis
-│   ├── mpls.py                      # Modified Partial Least Squares
-│   ├── opls.py                      # Orthogonal Partial Least Squares
-│   ├── hplc.py                      # HPLC data processing
-│   ├── FFT.py                       # Fast Fourier Transform
-│   ├── preprocess.py                # Data preprocessing utilities
-│   ├── data_augmentation.py         # Data augmentation techniques
-│   ├── evaluate_design.py           # Experimental design evaluation
-│   ├── midel.py                     # Model utilities
-│   └── chatbot.py                   # AI chatbot integration
-├── Streamlit Pipelines:
-│   ├── streamlit_fast_pipeline.py
-│   ├── streamlit_full_pipeline.py
-│   └── streamlit_optimized_pipeline.py
-├── realtime_client.py               # Real-time data client
-└── Api.txt                          # API configuration file
-```
-
-## Prerequisites
-
-- Python 3.10
-- pip package manager
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/Naveen-567/SpectrTwin.git
-cd SpectraTwin
-```
-
-2. Install required dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-3. **Set up Groq API Key** (IMPORTANT):
-   - Visit [Groq Console](https://console.groq.com) and create a free account
-   - Generate an API key from your account dashboard
-   - Create or update the `Api.txt` file in the project root:
-     ```
-     GroQ_API_key = your_api_key_here
-     ```
-   - Replace `your_api_key_here` with your actual Groq API key
-   - **⚠️ DO NOT commit this file with your API key to version control**
-
-## Running the Application
-
-### Locally
-
-#### Main Application
-```bash
-streamlit run Home.py
-```
-
-#### Fast Pipeline
-```bash
-streamlit run streamlit_fast_pipeline.py
-```
-
-#### Full Pipeline
-```bash
-streamlit run streamlit_full_pipeline.py
-```
-
-#### Optimized Pipeline
-```bash
-streamlit run streamlit_optimized_pipeline.py
-```
-
-#### Real-Time Data Transfer (LOCAL ONLY)
-**⚠️ DO NOT use through Streamlit Cloud - must be run locally**
-
-**Server Setup** (on main SpectraTwin system):
-```bash
-streamlit run Home.py
-# Then navigate to page "09_Real_Time_Transfer"
-# Click "▶️ Start Server" button
-# Copy the WebSocket URL shown on the page
-```
-
-**Client Setup** (on data source/instrument system):
-```bash
-python realtime_client.py
-# Paste the WebSocket URL and click Connect
-```
-
-**See "Real-Time Features" section above for complete setup guide.**
-
-The application will open in your default web browser at `http://localhost:8501`
-
-### Deploy on Streamlit Cloud
-
-**Note:** Most features work on Streamlit Cloud, **EXCEPT** the real-time data transfer feature which requires local network access and persistent WebSocket connections.
-
-**For real-time features:** Use the local setup (see "Running the Application" section above).
-
-**Follow the complete deployment guide:** [DEPLOYMENT.md](DEPLOYMENT.md)
-
-**Quick Summary:**
-1. Go to [Streamlit Cloud](https://streamlit.io/cloud) and sign in with GitHub
-2. Click "New app" and select this repository
-3. Set your Groq API key in app settings → Secrets:
-   ```toml
-   GROQ_API_KEY = "your_api_key_here"
-   ```
-4. Deploy!
-
-**Common Issues:**
-- If chatbot errors occur, it will gracefully disable (app still works)
-- Ensure `GROQ_API_KEY` is set in Streamlit Cloud Secrets
-- Check deployment logs if issues persist
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed troubleshooting.
-
-## Usage
-
-1. **Experimental Design**: Start by designing your experiment with proper statistical parameters
-2. **Data Preparation**: Preprocess your spectral data using the Preprocessing module
-3. **Model Training**: Train appropriate models based on your data characteristics
-4. **Analysis**: Run predictions and analyze results using trained models
-5. **Quality Control**: Monitor results using control charts
-
-## Configuration
-
-### API Setup
-Edit `Api.txt` to configure your Groq API credentials:
-```
-GroQ_API_key = your_groq_api_key
-```
-
-## Dependencies
-
-Key dependencies include:
-- streamlit
-- numpy
-- pandas
-- scikit-learn
-- groq
-- plotly
-- scipy
-
-See full list in `requirements.txt`
-
-## Real-Time Features
-
-### ⚠️ IMPORTANT: Real-Time Transfer is for LOCAL use only
-
-The **real-time data transfer feature** is designed to run on your **local system or internal network**, NOT through Streamlit Cloud. 
-
-**Why?**
-- Requires persistent network connections and background processes
-- Streamlit Cloud sessions timeout and restart periodically
-- File system access and direct network access not available on Cloud
-- WebSocket connections need to remain open indefinitely
-
----
-
-### Real-Time Data Transfer Setup
-
-#### Architecture Overview:
-```
-┌──────────────────────────────────────┐
-│  INSTRUMENT/DATA SOURCE SYSTEM       │
-│  (Local PC connected to device)      │
-│                                      │
-│  ├─ Run: realtime_client.py          │
-│  ├─ Connected to: FTIR/Raman/etc.    │
-│  └─ Sends data to SpectraTwin server │
-└─────────────────┬────────────────────┘
-                  │ 
-         Network Connection
-         (LAN or Internet)
-                  │
-                  ↓
-┌──────────────────────────────────────┐
-│  SPECTRATWIN SERVER (LOCAL or SELF-HOSTED) │
-│                                      │
-│  ├─ Run: streamlit run Home.py       │
-│  ├─ Open: Page 09_Real_Time_Transfer │
-│  ├─ Click: "▶️ Start Server"          │
-│  └─ View: Live predictions & data    │
-└──────────────────────────────────────┘
+SpectraTwin/
+├── Home.py                     # App entry point
+├── pages/                      # One file per feature (sidebar pages 00–10)
+├── preprocess.py               # SpectralData + preprocessing operations
+├── midel.py                    # Models, tuning (optuna), AutoModelSelector, NN
+├── prediction_utils.py         # Shared prediction helpers (used by 07 & 09)
+├── target_utils.py             # Single/multi-target handling
+├── pca.py / mpls.py / opls.py  # PCA / Multiway-PLS / Orthogonal-PLS
+├── FFT.py / hplc.py            # FFT filtering / HPLC
+├── data_augmentation.py        # Augmentation techniques
+├── spectra_specific/           # Technique-specific preprocessing optimizers
+├── realtime_client.py          # Real-time client (run on the instrument PC)
+├── chatbot.py                  # Optional AI assistant (Groq)
+└── requirements.txt
 ```
 
 ---
-
-### Step-by-Step Setup
-
-#### 1. On the SpectraTwin Server System (Main Application):
-
-```bash
-# Navigate to project directory
-cd /path/to/SpectraTwin
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Start the main app
-streamlit run Home.py
-```
-
-Then:
-- Open `http://localhost:8501` in your browser
-- Navigate to **"09_Real_Time_Transfer"** page
-- Enter the folder path to monitor (e.g., `C:\Spectra_Data`)
-- **(Optional)** Upload a trained model for real-time predictions
-- Click **"▶️ Start Server"** button
-- **Copy the WebSocket URL** shown on the page (e.g., `ws://192.168.1.100:8765`)
-
-#### 2. On the Data Source/Instrument System:
-
-```bash
-# Navigate to project directory
-cd /path/to/SpectraTwin
-
-# Install dependencies (same as server)
-pip install -r requirements.txt
-
-# Run the real-time client
-python realtime_client.py
-```
-
-Then:
-- A GUI window will open showing the client interface
-- **Paste the WebSocket URL** from Step 1 in the input field
-- Click **"Connect"** button
-- Wait for the status to show "✅ Connected"
-- Drop spectra files (`.csv`, `.txt`, `.xlsx`) in the monitored folder
-- Watch real-time predictions appear in the client!
-
----
-
-### Real-Time Client Features
-
-**`realtime_client.py` provides:**
-- Persistent network connection to SpectraTwin server
-- Real-time spectral data visualization
-- Live prediction display
-- Data logging to file (CSV or TXT)
-- Auto-save functionality
-- Connection status monitoring
-
-**Usage Example:**
-```bash
-# Terminal on data source system
-python realtime_client.py
-```
-
----
-
-### Deployment Options
-
-| Option | Use Case | Notes |
-|--------|----------|-------|
-| **Local (Same PC)** | Testing, small setup | Simplest, `ws://127.0.0.1:8765` |
-| **Local Network** | Lab setup, multiple instruments | Same network, `ws://192.168.x.x:8765` |
-| **Self-Hosted Server** | Production use, multiple clients | VPS or dedicated server |
-| **Streamlit Cloud** | ❌ NOT SUPPORTED | Session timeout, no persistent WebSocket |
-
----
-
-### Network Configuration
-
-#### For Local Network Access:
-1. Find server IP: `ipconfig` (Windows) or `ifconfig` (Linux/Mac)
-2. Use in client: `ws://SERVER_IP:8765` (replace SERVER_IP)
-3. Ensure firewall allows port 8765
-
-#### For Remote Access (across internet):
-1. Set up port forwarding on router
-2. Use: `ws://YOUR_PUBLIC_IP:8765`
-3. Consider using `wss://` (WebSocket Secure) for security
-
----
-
-### Troubleshooting Real-Time Connection
-
-**Connection Refused?**
-- [ ] Server is started on SpectraTwin page (look for green checkmark)
-- [ ] Server and client are on same/accessible network
-- [ ] Port 8765 is not blocked by firewall
-- [ ] Correct URL is pasted in client (`ws://...` not `http://...`)
-
-**No Data Received?**
-- [ ] Server folder exists and is accessible
-- [ ] File being dropped has correct extension (`.csv`, `.txt`, `.xlsx`, `.spa`)
-- [ ] Model file is loaded (if predictions expected)
-
-**Connection Drops?**
-- [ ] Check network stability
-- [ ] Firewall not blocking WebSocket traffic
-- [ ] Reconnect using the same client interface
-
----
-
-### Real-Time Processing Features
-
-**On SpectraTwin Server (09_Real_Time_Transfer page):**
-- Folder monitoring with automatic file detection
-- Optional model loading for real-time predictions
-- WebSocket server for broadcasting to multiple clients
-- Live uptime counter and connection details
-- Server start/stop controls
-
-
-- Ensure `realtime_client.py` is running on data source system
-- Check configured IP and port match in both systems
-
-**Issue: Groq API Key Error**
-- Ensure your API key is correctly set in `Api.txt`
-- Verify the key is active on the Groq console
-- Check your internet connection
-
-**Issue: Missing Dependencies**
-- Run `pip install -r requirements.txt` again
-- Ensure you're using the correct Python version (3.8+)
-
-**Issue: Port Already in Use**
-- The app uses port 8501 by default
-- To use a different port: `streamlit run Home.py --server.port 8502`
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Contact
-
-For questions or support, please open an issue on the GitHub repository.
-
----
-
-**Note**: This application is designed for spectral data analysis in research and industrial settings. Ensure you have appropriate expertise when interpreting results for critical applications.
+MIT License — see the `LICENSE` file.

@@ -357,9 +357,54 @@ def project_menu_page():
                 )
     
     st.divider()
-    
+
+    with st.expander("Edit Project — component names"):
+        st.caption("Rename components anytime (data is kept). Changing the NUMBER "
+                   "of components resets the collected data because the stored "
+                   "targets no longer line up.")
+        current = ", ".join(designer.y_component_names)
+        new_text = st.text_input("Component names (comma-separated)", current,
+                                 key="edit_components_input")
+
+        seen = set()
+        new_names = []
+        for n in (x.strip() for x in new_text.split(",")):
+            if n and n not in seen:
+                seen.add(n)
+                new_names.append(n)
+
+        count_changed = len(new_names) != designer.n_y_outputs
+        has_data = len(designer.y_observed) > 0
+        confirm = True
+        if count_changed and has_data:
+            st.warning(f"This changes the component count "
+                       f"({designer.n_y_outputs} → {len(new_names)}) and will clear "
+                       f"the {len(designer.y_observed)} collected data point(s).")
+            confirm = st.checkbox("I understand — reset collected data",
+                                  key="edit_components_confirm")
+
+        if st.button("Update Components", key="edit_components_btn"):
+            if not new_names:
+                st.error("Please provide at least one component name.")
+            elif not confirm:
+                st.error("Please tick the confirmation box first.")
+            elif not count_changed:
+                # Same number of components → safe in-place rename, keep data.
+                designer.y_component_names = new_names
+                st.success("Component names updated.")
+                st.rerun()
+            else:
+                # Count changed → rebuild the project with the new components.
+                st.session_state.designer = ExperimentalDesigner(
+                    project_type=designer.project_type,
+                    y_component_names=new_names,
+                    process_factors=None,
+                )
+                st.success("Project updated with the new components.")
+                st.rerun()
+
     tabs = st.tabs(["  Data Management", "🔬 Design & Analysis", "  Diagnostics"])
-    
+
     with tabs[0]:
         data_management_tab(designer)
     
@@ -398,25 +443,19 @@ def data_management_tab(designer):
                 
                 st.markdown(f"**Shape:** {df.shape[0]} rows × {df.shape[1]} columns")
                 
-                # TRY BOTH FORMATS: y_componentname AND componentname
                 y_col_names_with_prefix = [f"y_{name}" for name in designer.y_component_names]
                 y_col_names_without_prefix = designer.y_component_names
                 
-                # Check which format exists in the dataframe
                 missing_with_prefix = [col for col in y_col_names_with_prefix if col not in df.columns]
                 missing_without_prefix = [col for col in y_col_names_without_prefix if col not in df.columns]
                 
-                # Determine which format to use
                 if len(missing_without_prefix) == 0:
-                    # Use column names without prefix
                     y_col_names = y_col_names_without_prefix
                     use_prefix = False
                 elif len(missing_with_prefix) == 0:
-                    # Use column names with prefix
                     y_col_names = y_col_names_with_prefix
                     use_prefix = True
                 else:
-                    # Neither format works completely
                     st.error(f"Missing required columns!")
                     st.error(f"Looking for either: {', '.join(y_col_names_with_prefix)}")
                     st.error(f"Or: {', '.join(y_col_names_without_prefix)}")
@@ -437,7 +476,6 @@ def data_management_tab(designer):
                                         rows_skipped += 1
                                         continue
                                     
-                                    # Build y_dict using the correct column names
                                     y_dict = {}
                                     for i, name in enumerate(designer.y_component_names):
                                         y_dict[name] = float(row[y_col_names[i]])
