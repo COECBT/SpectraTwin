@@ -287,46 +287,26 @@ def home_page():
 def new_project_page():
     st.title("Create New Project")
     
-    project_type = st.selectbox("Project Type", ['process', 'spectral'])
-    
+    # Process experimental design has been removed — spectral projects only.
+    project_type = 'spectral'
     process_factors = None
-    if project_type == 'process':
-        st.subheader("Process Factors")
-        if 'n_factors' not in st.session_state:
-            st.session_state.n_factors = 3
-        
-        n_factors = st.number_input(
-            "Number of factors", 
-            min_value=1, 
-            max_value=10, 
-            value=st.session_state.n_factors,
-            key='n_factors_input'
-        )
-        st.session_state.n_factors = n_factors
-    
+
     with st.form("new_project_form"):
         st.subheader("Y Components (Outputs)")
         y_components = st.text_input("Component names (comma-separated)", "Component_A, Component_B")
-        
-        if project_type == 'process':
-            factor_data = []
-            for i in range(st.session_state.n_factors):
-                st.markdown(f"**Factor {i+1}**")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    name = st.text_input(f"Name", f"Factor_{i+1}", key=f"fname_{i}")
-                with col2:
-                    min_val = st.number_input(f"Min", value=0.0, key=f"fmin_{i}")
-                with col3:
-                    max_val = st.number_input(f"Max", value=100.0, key=f"fmax_{i}")
-                factor_data.append({'name': name, 'min': min_val, 'max': max_val})
-            
-            process_factors = factor_data
-        
+
         submitted = st.form_submit_button("Create Project", use_container_width=True)
-        
+
         if submitted:
-            y_names = [name.strip() for name in y_components.split(',') if name.strip()]
+            # Parse and DE-DUPLICATE the component names (preserving order).
+            # Duplicate names produced duplicate widget keys downstream
+            # (StreamlitDuplicateElementKey, e.g. 'ymin_Component_B').
+            seen = set()
+            y_names = []
+            for name in (n.strip() for n in y_components.split(',')):
+                if name and name not in seen:
+                    seen.add(name)
+                    y_names.append(name)
             if not y_names:
                 st.error("Please provide at least one component name")
             else:
@@ -638,12 +618,12 @@ def spectral_analysis_section(designer):
         y_min = []
         y_max = []
         
-        for name in designer.y_component_names:
+        for i, name in enumerate(designer.y_component_names):
             col1, col2 = st.columns(2)
             with col1:
-                min_val = st.number_input(f"Min {name}", value=0.0, key=f"ymin_{name}")
+                min_val = st.number_input(f"Min {name}", value=0.0, key=f"ymin_{i}_{name}")
             with col2:
-                max_val = st.number_input(f"Max {name}", value=100.0, key=f"ymax_{name}")
+                max_val = st.number_input(f"Max {name}", value=100.0, key=f"ymax_{i}_{name}")
             y_min.append(min_val)
             y_max.append(max_val)
         
